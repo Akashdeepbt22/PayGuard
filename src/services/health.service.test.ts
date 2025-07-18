@@ -1,123 +1,141 @@
-
+import { HealthService, OverallHealthStatus } from './health.service';
 import { LLMService } from './llm.service';
-import { LLM_CONFIG } from '../constants/app.constants';
 
-export interface HealthCheckResult {
-  service: string;
-  status: 'healthy' | 'unhealthy';
-  message: string;
-  timestamp: Date;
-}
-
-export interface OverallHealthStatus {
-  overall: 'healthy' | 'unhealthy';
-  checks: HealthCheckResult[];
-  timestamp: Date;
-}
-
-/**
- * Service class for health checks and dependency validation.
- * Tests critical services like OpenAI API on server startup.
- */
-export class HealthService {
-  /**
-   * Performs comprehensive health checks for all critical services.
-   * Tests OpenAI API connectivity and configuration.
-   * 
-   * @returns Promise<OverallHealthStatus> - Overall health status with detailed results
-   */
-  public static async performHealthChecks(): Promise<OverallHealthStatus> {
-    const checks: HealthCheckResult[] = [];
-    
-    // Test OpenAI API connection
-    const openaiCheck = await this.testOpenAIConnection();
-    checks.push(openaiCheck);
-    
-    // Determine overall health status
-    const overall = checks.every(check => check.status === 'healthy') ? 'healthy' : 'unhealthy';
-    
-    return {
-      overall,
-      checks,
-      timestamp: new Date()
-    };
+// Mock LLMService
+jest.mock('./llm.service', () => ({
+  LLMService: {
+    generateFraudExplanation: jest.fn()
   }
+}));
 
-  /**
-   * Tests OpenAI API connection by making a simple test request.
-   * Validates API key and network connectivity.
-   * 
-   * @returns Promise<HealthCheckResult> - OpenAI health check result
-   * @private
-   */
-  private static async testOpenAIConnection(): Promise<HealthCheckResult> {
-    try {
-      // Check if API key is configured
-      if (!process.env.OPENAI_API_KEY) {
-        return {
-          service: 'OpenAI API',
-          status: 'unhealthy',
-          message: 'OPENAI_API_KEY environment variable is not set',
-          timestamp: new Date()
-        };
-      }
+describe('HealthService', () => {
+  const originalEnv = process.env;
 
-      // Test with a simple prompt to validate API key and connectivity
-      const testExplanation = await LLMService.generateFraudExplanation(
-        100,
-        'USD',
-        'test@example.com',
-        0.0,
-        []
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    jest.clearAllMocks();
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  describe('performHealthChecks', () => {
+    it('should return healthy status when all services are working', async () => {
+      // Mock successful OpenAI response
+      (LLMService.generateFraudExplanation as jest.Mock).mockResolvedValue(
+        'Transaction appears safe with 0% risk score and no specific risk factors detected.'
       );
-
-      // If we get a response, the API is working
-      if (testExplanation && testExplanation.length > 0) {
-        return {
-          service: 'OpenAI API',
-          status: 'healthy',
-          message: `Successfully connected to OpenAI API (${LLM_CONFIG.MODEL})`,
-          timestamp: new Date()
-        };
-      } else {
-        return {
-          service: 'OpenAI API',
-          status: 'unhealthy',
-          message: 'OpenAI API returned empty response',
-          timestamp: new Date()
-        };
-      }
       
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      return {
-        service: 'OpenAI API',
-        status: 'unhealthy',
-        message: `OpenAI API connection failed: ${errorMessage}`,
-        timestamp: new Date()
-      };
-    }
-  }
+      process.env.OPENAI_API_KEY = 'test-api-key';
 
-  /**
-   * Logs health check results in a formatted way.
-   * 
-   * @param healthStatus - Overall health status to log
-   */
-  public static logHealthStatus(healthStatus: OverallHealthStatus): void {
-    console.log('\n🔍 Health Check Results:');
-    console.log('='.repeat(50));
-    
-    healthStatus.checks.forEach(check => {
-      const statusIcon = check.status === 'healthy' ? '✅' : '❌';
-      console.log(`${statusIcon} ${check.service}: ${check.status.toUpperCase()}`);
-      console.log(`   ${check.message}`);
+      const result = await HealthService.performHealthChecks();
+
+      expect(result.overall).toBe('healthy');
+      expect(result.checks).toHaveLength(1);
+      expect(result.checks[0].service).toBe('OpenAI API');
+      expect(result.checks[0].status).toBe('healthy');
+      expect(result.checks[0].message).toContain('Successfully connected to OpenAI API');
+      expect(result.timestamp).toBeInstanceOf(Date);
     });
-    
-    console.log('='.repeat(50));
-    const overallIcon = healthStatus.overall === 'healthy' ? '✅' : '❌';
-    console.log(`${overallIcon} Overall Status: ${healthStatus.overall.toUpperCase()}`);
-    console.log(`⏰ Timestamp: ${healthStatus.timestamp.toISOString()}`);
-    console.log('');
-  }
-} 
+
+    it('should return unhealthy status when OpenAI API key is missing', async () => {
+      delete process.env.OPENAI_API_KEY;
+
+      const result = await HealthService.performHealthChecks();
+
+      expect(result.overall).toBe('unhealthy');
+      expect(result.checks).toHaveLength(1);
+      expect(result.checks[0].service).toBe('OpenAI API');
+      expect(result.checks[0].status).toBe('unhealthy');
+      expect(result.checks[0].message).toBe('OPENAI_API_KEY environment variable is not set');
+    });
+
+    it('should return unhealthy status when OpenAI API fails', async () => {
+      // Mock OpenAI API failure
+      (LLMService.generateFraudExplanation as jest.Mock).mockRejectedValue(
+        new Error('API key is invalid')
+      );
+      
+      process.env.OPENAI_API_KEY = 'invalid-api-key';
+
+      const result = await HealthService.performHealthChecks();
+
+      expect(result.overall).toBe('unhealthy');
+      expect(result.checks).toHaveLength(1);
+      expect(result.checks[0].service).toBe('OpenAI API');
+      expect(result.checks[0].status).toBe('unhealthy');
+      expect(result.checks[0].message).toContain('OpenAI API connection failed');
+    });
+
+    it('should return unhealthy status when OpenAI API returns empty response', async () => {
+      // Mock empty response
+      (LLMService.generateFraudExplanation as jest.Mock).mockResolvedValue('');
+      
+      process.env.OPENAI_API_KEY = 'test-api-key';
+
+      const result = await HealthService.performHealthChecks();
+
+      expect(result.overall).toBe('unhealthy');
+      expect(result.checks).toHaveLength(1);
+      expect(result.checks[0].service).toBe('OpenAI API');
+      expect(result.checks[0].status).toBe('unhealthy');
+      expect(result.checks[0].message).toBe('OpenAI API returned empty response');
+    });
+  });
+
+  describe('logHealthStatus', () => {
+    it('should log health status correctly', () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+      
+      const mockHealthStatus: OverallHealthStatus = {
+        overall: 'healthy',
+        checks: [
+          {
+            service: 'OpenAI API',
+            status: 'healthy',
+            message: 'Successfully connected to OpenAI API (gpt-3.5-turbo)',
+            timestamp: new Date('2024-01-01T00:00:00Z')
+          }
+        ],
+        timestamp: new Date('2024-01-01T00:00:00Z')
+      };
+
+      HealthService.logHealthStatus(mockHealthStatus);
+
+      expect(consoleSpy).toHaveBeenCalledWith('\n🔍 Health Check Results:');
+      expect(consoleSpy).toHaveBeenCalledWith('='.repeat(50));
+      expect(consoleSpy).toHaveBeenCalledWith('✅ OpenAI API: HEALTHY');
+      expect(consoleSpy).toHaveBeenCalledWith('   Successfully connected to OpenAI API (gpt-3.5-turbo)');
+      expect(consoleSpy).toHaveBeenCalledWith('✅ Overall Status: HEALTHY');
+
+      consoleSpy.mockRestore();
+    });
+
+    it('should log unhealthy status correctly', () => {
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+      
+      const mockHealthStatus: OverallHealthStatus = {
+        overall: 'unhealthy',
+        checks: [
+          {
+            service: 'OpenAI API',
+            status: 'unhealthy',
+            message: 'OPENAI_API_KEY environment variable is not set',
+            timestamp: new Date('2024-01-01T00:00:00Z')
+          }
+        ],
+        timestamp: new Date('2024-01-01T00:00:00Z')
+      };
+
+      HealthService.logHealthStatus(mockHealthStatus);
+
+      expect(consoleSpy).toHaveBeenCalledWith('❌ OpenAI API: UNHEALTHY');
+      expect(consoleSpy).toHaveBeenCalledWith('   OPENAI_API_KEY environment variable is not set');
+      expect(consoleSpy).toHaveBeenCalledWith('❌ Overall Status: UNHEALTHY');
+
+      consoleSpy.mockRestore();
+    });
+  });
+}); 
